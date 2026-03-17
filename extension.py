@@ -19,6 +19,8 @@ from java.net import URL
 from java.io import OutputStreamWriter, BufferedReader, InputStreamReader
 import json
 import time
+import hashlib
+import uuid
 
 COL_RUNNING = Color(0xFF, 0xA5, 0x00)
 COL_VULN    = Color(0xBF, 0x00, 0x00)
@@ -340,16 +342,66 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab):
         self._records_map  = {}
         self._poll_threads = {}
         self._selected_tid = None
+        self._project_id   = self._resolve_project_id()
         try:
             SwingUtilities.invokeAndWait(_RunLater(self._init_ui))
         except Exception:
             import traceback
             callbacks.printError("SQLBurp init error:\n" + traceback.format_exc())
 
-    def _load_stored_tasks(self):
-        """Load task IDs from Burp project settings (scoped to current project)."""
+    # ------------------------------------------------------------------
+    # Project-scoped settings helpers
+    #
+    # Burp's saveExtensionSetting / loadExtensionSetting are backed by the
+    # global user-preferences file, NOT the .burp project file, so every
+    # project shares the same key-space by default.  We work around this by
+    # deriving a stable fingerprint for the current project and namespacing
+    # every key under it.
+    #
+    # Fingerprint strategy (in order of preference):
+    #   1. Hash the raw bytes of the first few proxy-history entries.
+    #      These live in the project file and are stable across restarts.
+    #   2. If proxy history is empty (fresh/temporary project), generate a
+    #      UUID and store it under a bare sentinel key so it survives for
+    #      the lifetime of that Burp session.
+    # ------------------------------------------------------------------
+
+    def _resolve_project_id(self):
+        """Return a 16-char hex string that is stable per project."""
         try:
-            raw = self._callbacks.loadExtensionSetting("sqlburp_tasks")
+            history = self._callbacks.getProxyHistory()
+            if history:
+                h = hashlib.sha256()
+                for msg in history[:5]:
+                    raw = msg.getRequest()
+                    if raw:
+                        h.update(bytes(raw))
+                return h.hexdigest()[:16]
+        except Exception:
+            pass
+        # Fallback: reuse or mint a UUID stored under a bare sentinel key.
+        sentinel = "sqlburp_pid"
+        try:
+            existing = self._callbacks.loadExtensionSetting(sentinel)
+            if existing:
+                return existing
+        except Exception:
+            pass
+        new_id = uuid.uuid4().hex[:16]
+        try:
+            self._callbacks.saveExtensionSetting(sentinel, new_id)
+        except Exception:
+            pass
+        return new_id
+
+    def _pkey(self, suffix):
+        """Return a project-namespaced settings key."""
+        return "sqlburp_%s_%s" % (self._project_id, suffix)
+
+    def _load_stored_tasks(self):
+        """Load task IDs scoped to the current project."""
+        try:
+            raw = self._callbacks.loadExtensionSetting(self._pkey("tasks"))
             if raw:
                 return json.loads(raw)
         except Exception:
@@ -357,14 +409,14 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab):
         return []
 
     def _save_stored_tasks(self, task_ids):
-        """Persist task IDs into Burp project settings."""
+        """Persist task IDs scoped to the current project."""
         try:
-            self._callbacks.saveExtensionSetting("sqlburp_tasks", json.dumps(task_ids))
+            self._callbacks.saveExtensionSetting(self._pkey("tasks"), json.dumps(task_ids))
         except Exception:
             pass
 
     def _save_scan_record(self, rec):
-        """Persist a completed scan's full data into Burp project settings."""
+        """Persist a scan record scoped to the current project."""
         try:
             payload = {
                 "task_id":   rec.task_id,
@@ -394,14 +446,14 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab):
                 },
             }
             self._callbacks.saveExtensionSetting(
-                "sqlburp_scan_%s" % rec.task_id, json.dumps(payload))
+                self._pkey("scan_%s" % rec.task_id), json.dumps(payload))
         except Exception:
             pass
 
     def _load_scan_record(self, task_id):
-        """Load a previously persisted scan record. Returns dict or None."""
+        """Load a persisted scan record for this project. Returns dict or None."""
         try:
-            raw = self._callbacks.loadExtensionSetting("sqlburp_scan_%s" % task_id)
+            raw = self._callbacks.loadExtensionSetting(self._pkey("scan_%s" % task_id))
             if raw:
                 return json.loads(raw)
         except Exception:
@@ -941,7 +993,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab):
     def _purge_scan_record(self, task_id):
         """Remove all Burp project data for a task (scan record + task ID from list)."""
         try:
-            self._callbacks.saveExtensionSetting("sqlburp_scan_%s" % task_id, None)
+            self._callbacks.saveExtensionSetting(self._pkey("scan_%s" % task_id), None)
         except Exception:
             pass
         stored = self._load_stored_tasks()
@@ -1013,7 +1065,6 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab):
         messages = invocation.getSelectedMessages()
         if not messages:
             return
-        import hashlib
         seen = set()
         for msg in messages:
             raw_request  = self._helpers.bytesToString(msg.getRequest())
