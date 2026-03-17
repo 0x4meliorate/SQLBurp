@@ -1,0 +1,33 @@
+plugins {
+    id 'java'
+}
+
+group   = 'com.sqlburp'
+version = '1.0.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    compileOnly 'net.portswigger.burp.extensions:montoya-api:2026.2'
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.17.2'
+}
+
+jar {
+    archiveFileName = 'SQLBurp.jar'
+    from {
+        configurations.runtimeClasspath.collect {
+            it.isDirectory() ? it : zipTree(it)
+        }
+    }
+    manifest {
+        attributes 'Burp-Extension-Class': 'com.sqlburp.SQLBurp'
+    }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
