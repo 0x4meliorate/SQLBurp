@@ -1,6 +1,6 @@
 # 🗡️ SQLBurp
 
-![Python](https://img.shields.io/badge/python-Jython%202.7-blue?logo=python&logoColor=white)
+![Java](https://img.shields.io/badge/java-17+-blue?logo=java&logoColor=white)
 ![Burp Suite](https://img.shields.io/badge/Burp_Suite-Extension-orange)
 ![sqlmap](https://img.shields.io/badge/sqlmap-REST%20API-red)
 
@@ -9,14 +9,31 @@ A Burp Suite extension that integrates the sqlmap REST API into your testing wor
 ## ⚙️ Requirements
 
 - Burp Suite
-- [Jython standalone JAR](https://www.jython.org/download) configured as the Python environment in Burp
+- [Java JDK](https://www.oracle.com/java/technologies/downloads/) (JDK 17 or later)
 - [sqlmap](https://github.com/sqlmapproject/sqlmap) installed and accessible
 
 ## 🚀 Setup
 
-**1. Configure Jython in Burp**
+**1. Get the jar**
 
-`Extender` → `Options` → `Python Environment` → select your Jython standalone JAR.
+Download the latest `SQLBurp.jar` from the [Releases](../../releases) page, or build it yourself:
+
+Install the JDK from `https://www.oracle.com/java/technologies/downloads/`, then install Gradle via [Scoop](https://scoop.sh):
+
+```powershell
+Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+irm get.scoop.sh | iex
+scoop install gradle
+```
+
+Then in the project folder:
+
+```powershell
+gradle wrapper
+.\gradlew.bat jar
+```
+
+The jar is output to `build\libs\SQLBurp.jar`.
 
 **2. Start the sqlmap REST API**
 
@@ -28,9 +45,9 @@ No `--database` flag needed.
 
 **3. Load the extension**
 
-`Extender` → `Extensions` → `Add` → `Extension Type: Python` → select `sqlmapgui.py`.
+`Extensions` -> `Add` -> `Extension Type: Java` -> select `SQLBurp.jar`.
 
-The **SQLMap API** tab will appear. Use the **Ping** button to verify the API is reachable.
+The **SQLBurp** tab will appear. Use the **Ping** button to verify the API is reachable.
 
 ## 📖 Usage
 
@@ -62,7 +79,7 @@ Settings are snapshotted at submission time, so each scan row remembers the exac
 
 ### 📊 Scan table
 
-Each submitted request appears as a row. Columns are sortable by `#`, `Status`, and `Started`. Click any row to view its live log and option snapshot in the detail panel below.
+Each submitted request appears as a row. Columns are sortable. Click any row to view its live log and option snapshot in the detail panel below.
 
 | Status | Meaning |
 | --- | --- |
@@ -78,31 +95,25 @@ Each submitted request appears as a row. Columns are sortable by `#`, `Status`, 
 | Action | Description |
 | --- | --- |
 | Stop Task | Sends a stop signal to sqlmapapi and marks the scan as Stopped |
-| Delete Task | Stops the scan, deletes it from the API, and removes all data from the Burp project |
+| Delete Task | Stops the scan, deletes it from the API, and removes all persisted data |
+| Remove Row | Removes the row and purges persisted data without touching the API |
 
 ### 🧰 Toolbar
 
 | Button | Description |
 | --- | --- |
 | Stop All | Stops all currently running scans |
-| Remove Finished | Removes all Finished, Stopped, and Error rows and purges their data from the project |
+| Remove Finished | Removes all Finished, Stopped, and Error rows and purges their data |
 
 ## 💾 Persistence
 
-All scan data is stored via Burp's extension settings API. Because that API writes to the global user preferences file rather than the `.burp` project file, SQLBurp derives a **project fingerprint** at load time and namespaces every settings key under it, ensuring scans from one project are never visible in another.
-
-**How the fingerprint is derived:**
-
-1. The raw bytes of the first few proxy history entries are SHA-256 hashed. Since proxy history is serialised into the project file, this hash is stable across restarts of the same project and differs between projects.
-2. If proxy history is empty (a fresh or temporary project), a UUID is generated and stored as a fallback seed for that session.
-
-All settings keys take the form `sqlburp_<fingerprint>_<key>`, so each project maintains a fully isolated scan store.
+All scan data is stored in the Burp project file via the Montoya API's `persistence().extensionData()`. This is natively project-scoped, so opening a different Burp project shows only that project's scans with no cross-contamination between engagements.
 
 - **No external database** - sqlmapapi can be restarted freely without losing any scan history.
 - **Incremental saving** - the scan record is written on start and updated on every log line, so data is preserved even if Burp is closed mid-scan.
 - **Automatic restore** - all scans for the current project are loaded back into the table when the extension initialises.
 
-Deleting a scan via right-click or Remove Finished purges it from both the API and the project's settings permanently.
+Deleting a scan via right-click or Remove Finished purges it from both the API and the project permanently.
 
 ## 📝 Notes
 
