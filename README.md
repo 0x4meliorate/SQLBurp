@@ -4,7 +4,7 @@
 ![Burp Suite](https://img.shields.io/badge/Burp_Suite-Extension-orange)
 ![sqlmap](https://img.shields.io/badge/sqlmap-REST%20API-red)
 
-A Burp Suite extension that integrates the sqlmap REST API into your testing workflow. Send requests from anywhere in Burp, track multiple scans concurrently, and have results persist in the Burp project file with no external database required.
+A Burp Suite extension that integrates the sqlmap REST API into your testing workflow. Send requests from anywhere in Burp, track multiple scans concurrently, and review persisted results.
 
 ## ⚙️ Requirements
 
@@ -24,7 +24,7 @@ A Burp Suite extension that integrates the sqlmap REST API into your testing wor
 python sqlmapapi.py -s -H 127.0.0.1 -p 8775
 ```
 
-No `--database` flag needed. All scan data is persisted in the Burp project file.
+No `--database` flag needed.
 
 **3. Load the extension**
 
@@ -89,14 +89,20 @@ Each submitted request appears as a row. Columns are sortable by `#`, `Status`, 
 
 ## 💾 Persistence
 
-All scan data is stored in the Burp project file using Burp's extension settings API.
+All scan data is stored via Burp's extension settings API. Because that API writes to the global user preferences file rather than the `.burp` project file, SQLBurp derives a **project fingerprint** at load time and namespaces every settings key under it, ensuring scans from one project are never visible in another.
 
-- **Scans are project-scoped** - opening a different Burp project shows only that project's scans, with no cross-contamination between engagements.
+**How the fingerprint is derived:**
+
+1. The raw bytes of the first few proxy history entries are SHA-256 hashed. Since proxy history is serialised into the project file, this hash is stable across restarts of the same project and differs between projects.
+2. If proxy history is empty (a fresh or temporary project), a UUID is generated and stored as a fallback seed for that session.
+
+All settings keys take the form `sqlburp_<fingerprint>_<key>`, so each project maintains a fully isolated scan store.
+
 - **No external database** - sqlmapapi can be restarted freely without losing any scan history.
 - **Incremental saving** - the scan record is written on start and updated on every log line, so data is preserved even if Burp is closed mid-scan.
-- **Automatic restore** - all scans from the current project are loaded back into the table when the extension initialises.
+- **Automatic restore** - all scans for the current project are loaded back into the table when the extension initialises.
 
-Deleting a scan via right-click or Remove Finished purges it from both the API and the Burp project permanently.
+Deleting a scan via right-click or Remove Finished purges it from both the API and the project's settings permanently.
 
 ## 📝 Notes
 
