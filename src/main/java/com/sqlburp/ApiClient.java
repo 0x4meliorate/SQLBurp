@@ -18,8 +18,12 @@ public class ApiClient {
         this.http = http;
     }
 
+    private static String stripTrailingSlash(String s) {
+        return s.endsWith("/") ? s.substring(0, s.length() - 1) : s;
+    }
+
     private JsonNode request(String method, String baseUrl, String path, String body) throws IOException {
-        String url = baseUrl.replaceAll("/$", "") + path;
+        String url = stripTrailingSlash(baseUrl) + path;
 
         HttpRequest req = HttpRequest.httpRequestFromUrl(url)
             .withMethod(method.toUpperCase())
