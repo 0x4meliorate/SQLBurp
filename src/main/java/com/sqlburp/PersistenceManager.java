@@ -1,5 +1,6 @@
 package com.sqlburp;
 
+import burp.api.montoya.logging.Logging;
 import burp.api.montoya.persistence.PersistedObject;
 import burp.api.montoya.utilities.json.JsonArrayNode;
 import burp.api.montoya.utilities.json.JsonNode;
@@ -17,18 +18,31 @@ public class PersistenceManager {
     private static final String KEY_SCAN_PFX = "sqlburp_scan_";
 
     private final PersistedObject store;
+    private final Logging         logging;
 
-    public PersistenceManager(PersistedObject store) {
-        this.store = store;
+    /** In-memory cache to avoid deserialising the task list on every add/remove. */
+    private List<String> taskIdCache;
+
+    public PersistenceManager(PersistedObject store, Logging logging) {
+        this.store   = store;
+        this.logging = logging;
     }
 
     // ------------------------------------------------------------------
     // Task list
     // ------------------------------------------------------------------
 
-    public List<String> loadTaskIds() {
+    public synchronized List<String> loadTaskIds() {
+        if (taskIdCache != null) {
+            logging.logToOutput("SQLBurp: loadTaskIds (cached): " + taskIdCache);
+            return new ArrayList<>(taskIdCache);
+        }
         String raw = store.getString(KEY_TASKS);
-        if (raw == null || raw.isEmpty()) return new ArrayList<>();
+        logging.logToOutput("SQLBurp: loadTaskIds from store: " + raw);
+        if (raw == null || raw.isEmpty()) {
+            taskIdCache = new ArrayList<>();
+            return new ArrayList<>();
+        }
         try {
             List<String> ids = new ArrayList<>();
             JsonNode node = JsonNode.jsonNode(raw);
@@ -37,39 +51,48 @@ public class PersistenceManager {
                     ids.add(item.asString());
                 }
             }
-            return ids;
+            taskIdCache = ids;
+            return new ArrayList<>(ids);
         } catch (Exception e) {
+            logging.logToError("SQLBurp: failed to load task IDs: " + e.getMessage());
+            taskIdCache = new ArrayList<>();
             return new ArrayList<>();
         }
     }
 
-    public void saveTaskIds(List<String> ids) {
+    private synchronized void flushTaskIds() {
+        if (taskIdCache == null) return;
         try {
             JsonArrayNode arr = jsonArrayNode();
-            ids.forEach(arr::addString);
-            store.setString(KEY_TASKS, arr.toJsonString());
-        } catch (Exception ignored) {}
-    }
-
-    public void addTaskId(String taskId) {
-        List<String> ids = loadTaskIds();
-        if (!ids.contains(taskId)) {
-            ids.add(taskId);
-            saveTaskIds(ids);
+            taskIdCache.forEach(arr::addString);
+            String json = arr.toJsonString();
+            store.setString(KEY_TASKS, json);
+            logging.logToOutput("SQLBurp: flushed task IDs: " + json);
+        } catch (Exception e) {
+            logging.logToError("SQLBurp: failed to flush task IDs: " + e.getMessage());
         }
     }
 
-    public void removeTaskId(String taskId) {
-        List<String> ids = loadTaskIds();
-        ids.remove(taskId);
-        saveTaskIds(ids);
+    public synchronized void addTaskId(String taskId) {
+        if (taskIdCache == null) loadTaskIds();
+        if (!taskIdCache.contains(taskId)) {
+            taskIdCache.add(taskId);
+            flushTaskIds();
+        }
+    }
+
+    public synchronized void removeTaskId(String taskId) {
+        if (taskIdCache == null) loadTaskIds();
+        if (taskIdCache.remove(taskId)) {
+            flushTaskIds();
+        }
     }
 
     // ------------------------------------------------------------------
     // Scan records
     // ------------------------------------------------------------------
 
-    public void saveScanRecord(ScanRecord rec) {
+    public synchronized void saveScanRecord(ScanRecord rec) {
         try {
             JsonObjectNode n = jsonObjectNode();
             n.putString("taskId",   rec.taskId);
@@ -80,25 +103,30 @@ public class PersistenceManager {
             n.putString("started",  rec.started);
 
             JsonArrayNode log = jsonArrayNode();
-            rec.logLines.forEach(log::addString);
+            synchronized (rec.logLines) {
+                for (String line : rec.logLines) {
+                    log.addString(line);
+                }
+            }
             n.put("logLines", log);
 
             JsonArrayNode results = jsonArrayNode();
-            for (Object r : rec.results) {
-                if (r instanceof JsonNode) {
-                    results.add((JsonNode) r);
-                } else {
-                    results.addString(r.toString());
-                }
+            for (JsonNode r : rec.results) {
+                results.add(r);
             }
             n.put("results", results);
             n.put("options", rec.options.toJson());
 
             store.setString(KEY_SCAN_PFX + rec.taskId, n.toJsonString());
-        } catch (Exception ignored) {}
+            logging.logToOutput("SQLBurp: saved scan record " + rec.taskId
+                + " [" + rec.status + ", " + rec.logLines.size() + " log lines]");
+        } catch (Exception e) {
+            logging.logToError("SQLBurp: failed to save scan record "
+                + rec.taskId + ": " + e.getMessage());
+        }
     }
 
-    public ScanRecord loadScanRecord(String taskId) {
+    public synchronized ScanRecord loadScanRecord(String taskId) {
         String raw = store.getString(KEY_SCAN_PFX + taskId);
         if (raw == null || raw.isEmpty()) return null;
         try {
@@ -106,14 +134,18 @@ public class PersistenceManager {
             if (node == null || !node.isObject()) return null;
             JsonObjectNode j = node.asObject();
 
+            JsonNode targetNode  = j.get("target");
+            JsonNode methodNode  = j.get("method");
+            JsonNode statusNode  = j.get("status");
+            JsonNode findingsNode = j.get("findings");
+
             ScanRecord r = new ScanRecord(
                 taskId,
-                j.getString("target") != null ? j.getString("target") : "(unknown)",
-                j.getString("method") != null ? j.getString("method") : "GET"
+                (targetNode != null && targetNode.isString()) ? targetNode.asString() : "(unknown)",
+                (methodNode != null && methodNode.isString()) ? methodNode.asString() : "GET"
             );
-            r.status   = j.getString("status") != null ? j.getString("status") : ScanRecord.STATUS_DONE;
-            Long findings = j.getLong("findings");
-            r.findings = findings != null ? findings.intValue() : 0;
+            r.status   = (statusNode != null && statusNode.isString()) ? statusNode.asString() : ScanRecord.STATUS_DONE;
+            r.findings = (findingsNode != null && findingsNode.isNumber()) ? ((Number) findingsNode.asNumber()).intValue() : 0;
 
             JsonNode logNode = j.get("logLines");
             if (logNode != null && logNode.isArray()) {
@@ -132,12 +164,19 @@ public class PersistenceManager {
 
             return r;
         } catch (Exception e) {
+            logging.logToError("SQLBurp: failed to load scan record "
+                + taskId + ": " + e.getMessage());
             return null;
         }
     }
 
-    public void deleteScanRecord(String taskId) {
-        store.setString(KEY_SCAN_PFX + taskId, null);
+    public synchronized void deleteScanRecord(String taskId) {
+        try {
+            store.setString(KEY_SCAN_PFX + taskId, null);
+        } catch (Exception e) {
+            logging.logToError("SQLBurp: failed to delete scan record "
+                + taskId + ": " + e.getMessage());
+        }
         removeTaskId(taskId);
     }
 }
